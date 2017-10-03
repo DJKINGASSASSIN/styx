@@ -148,6 +148,7 @@ public class StyxScheduler implements AppInit {
   public interface StatsFactory extends Function<Environment, Stats> { }
   public interface PublisherFactory extends Function<Environment, Publisher> { }
   public interface EventConsumerFactory extends BiFunction<Environment, Stats, BiConsumer<SequenceEvent, RunState>> { }
+  public interface WorkflowExecutionGateFactory extends Function<Environment, WorkflowExecutionGate> { }
 
   @FunctionalInterface
   interface DockerRunnerFactory {
@@ -179,6 +180,7 @@ public class StyxScheduler implements AppInit {
     private RetryUtil retryUtil = DEFAULT_RETRY_UTIL;
     private WorkflowResourceDecorator resourceDecorator = WorkflowResourceDecorator.NOOP;
     private EventConsumerFactory eventConsumerFactory = (env, stats) -> (event, state) -> { };
+    private WorkflowExecutionGateFactory executionGateFactory = env -> WorkflowExecutionGate.NOOP;
 
     public Builder setTime(Time time) {
       this.time = time;
@@ -230,6 +232,11 @@ public class StyxScheduler implements AppInit {
       return this;
     }
 
+    public Builder setExecutionGateFactory(WorkflowExecutionGateFactory executionGateFactory) {
+      this.executionGateFactory = executionGateFactory;
+      return this;
+    }
+
     public StyxScheduler build() {
       return new StyxScheduler(this);
     }
@@ -255,6 +262,8 @@ public class StyxScheduler implements AppInit {
   private final RetryUtil retryUtil;
   private final WorkflowResourceDecorator resourceDecorator;
   private final EventConsumerFactory eventConsumerFactory;
+  private final WorkflowExecutionGateFactory executionGateFactory;
+
 
   private StateManager stateManager;
   private Scheduler scheduler;
@@ -272,6 +281,7 @@ public class StyxScheduler implements AppInit {
     this.retryUtil = requireNonNull(builder.retryUtil);
     this.resourceDecorator = requireNonNull(builder.resourceDecorator);
     this.eventConsumerFactory = requireNonNull(builder.eventConsumerFactory);
+    this.executionGateFactory = requireNonNull(builder.executionGateFactory);
   }
 
   @Override
@@ -348,7 +358,8 @@ public class StyxScheduler implements AppInit {
         workflowChanged(workflowCache, workflowInitializer, stats, stateManager);
 
     final Scheduler scheduler = new Scheduler(time, timeoutConfig, stateManager, workflowCache,
-                                              storage, resourceDecorator, stats, dequeueRateLimiter);
+                                              storage, resourceDecorator, stats, dequeueRateLimiter,
+                                              executionGateFactory.apply(environment));
 
     final Cleaner cleaner = new Cleaner(dockerRunner);
 
