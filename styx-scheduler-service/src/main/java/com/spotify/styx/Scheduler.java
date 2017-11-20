@@ -21,7 +21,7 @@
 package com.spotify.styx;
 
 import static com.spotify.styx.WorkflowExecutionGate.NO_MISSING_DEPS;
-import static com.spotify.styx.state.handlers.TerminationHandler.MISSING_DEPS_RETRY_DELAY_MINUTES;
+import static com.spotify.styx.state.handlers.TerminationHandler.MISSING_DEPS_RETRY_DELAY;
 import static com.spotify.styx.util.TimeUtil.nextInstant;
 import static java.util.Collections.emptySet;
 import static java.util.function.Function.identity;
@@ -40,6 +40,7 @@ import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.RateLimiter;
 import com.spotify.styx.model.Event;
 import com.spotify.styx.model.EventVisitorAdapter;
+import com.spotify.styx.model.ExecutionDescription;
 import com.spotify.styx.model.Resource;
 import com.spotify.styx.model.SequenceEvent;
 import com.spotify.styx.model.Workflow;
@@ -63,15 +64,15 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.SortedSet;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import javaslang.Tuple;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -177,39 +178,19 @@ public class Scheduler {
             .collect(toCollection(Lists::newArrayList));
     Collections.shuffle(eligibleInstances);
 
-    final Map<WorkflowId, Optional<Workflow>> workflows = eligibleInstances.stream()
-        .map(i -> i.workflowInstance().workflowId())
-        .distinct()
-        .collect(toMap(id -> id, workflowCache::workflow));
-
     for (List<InstanceState> batch : Lists.partition(eligibleInstances, SCHEDULING_BATCH_SIZE)) {
 
-      final Map<WorkflowInstance, SortedSet<SequenceEvent>> batchEvents =
-          eligibleInstances.parallelStream()
-              .collect(toMap(InstanceState::workflowInstance, (InstanceState i) -> {
-                try {
-                  return storage.readEvents(i.workflowInstance());
-                } catch (IOException e) {
-                  throw new RuntimeException(e);
-                }
-              }));
-
-      final Map<WorkflowInstance, CompletionStage<List<String>>> batchMissingDependencies =
-          eligibleInstances.stream()
-              .map(i -> Tuple.of(i, workflows.get(i.workflowInstance().workflowId())))
-              .filter(i -> i._2().isPresent())
-              .filter(i -> shouldCheckDependencies(
-                  i._2().get().configuration(), batchEvents.get(i._1.workflowInstance())))
+      final Map<WorkflowInstance, CompletionStage<List<String>>> missingDependencies =
+          batch.parallelStream()
+              .map(InstanceState::workflowInstance)
               .collect(toMap(
-                  i -> i._1.workflowInstance(),
-                  i -> gate.missingDependencies(
-                      i._1.workflowInstance(), i._2.get().configuration(), i._1.runState())
-              ));
+                  Function.identity(),
+                  this::missingDependencies));
 
       for (InstanceState instance : batch) {
         final boolean proceed = limitAndDequeue(
             resources, workflowResourceReferences, currentResourceUsage, instance,
-            batchMissingDependencies.getOrDefault(instance.workflowInstance(), NO_MISSING_DEPS));
+            missingDependencies.getOrDefault(instance.workflowInstance(), NO_MISSING_DEPS));
         if (!proceed) {
           break;
         }
@@ -217,6 +198,47 @@ public class Scheduler {
     }
 
     updateStats(resources, currentResourceUsage);
+  }
+
+  private SortedSet<SequenceEvent> readEvents(WorkflowInstance instance) {
+    try {
+      return storage.readEvents(instance);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  private CompletionStage<List<String>> missingDependencies(WorkflowInstance instance) {
+    final Optional<Workflow> workflow = workflowCache.workflow(instance.workflowId());
+    if (!workflow.isPresent()) {
+      return NO_MISSING_DEPS;
+    }
+    final WorkflowConfiguration configuration = workflow.get().configuration();
+    // TODO: eliminate the need to read events
+    final SortedSet<SequenceEvent> events = readEvents(instance);
+    if (!shouldCheckDependencies(configuration, events)) {
+      return NO_MISSING_DEPS;
+    }
+    final Optional<Execution> lastExecution = lastExecution(events);
+    if (!lastExecution.isPresent()) {
+      return NO_MISSING_DEPS;
+    }
+    return gate.missingDependencies(instance, configuration,
+        lastExecution.get().id(), lastExecution.get().description());
+  }
+
+  private Optional<Execution> lastExecution(SortedSet<SequenceEvent> events) {
+    return events.stream()
+        .map(event -> event.event().accept(new EventVisitorAdapter<Execution>() {
+          // TODO: only return "submitted" and/or "started" executions?
+          @Override
+          public Execution submit(WorkflowInstance workflowInstance,
+              ExecutionDescription executionDescription, @Nullable String executionId) {
+            return Execution.of(executionId, executionDescription);
+          }
+        }))
+        .filter(Objects::nonNull)
+        .reduce((a, b) -> b);
   }
 
   private boolean shouldCheckDependencies(WorkflowConfiguration configuration, SortedSet<SequenceEvent> events) {
@@ -271,7 +293,7 @@ public class Scheduler {
               .collect(Collectors.joining(", ")))));
       stateManager.receiveIgnoreClosed(Event.retryAfter(
           instance.workflowInstance(),
-          TimeUnit.MINUTES.toMillis(MISSING_DEPS_RETRY_DELAY_MINUTES)));
+          MISSING_DEPS_RETRY_DELAY.toMillis()));
       LOG.debug("Dequeue rescheduled, missing dependencies: {}: {}",
           instance.workflowInstance(), missingDependencies);
       return true;
@@ -401,6 +423,16 @@ public class Scheduler {
 
     static ResourceWithInstance create(String resource, InstanceState instanceState) {
       return new AutoValue_Scheduler_ResourceWithInstance(resource, instanceState);
+    }
+  }
+
+  @AutoValue
+  abstract static class Execution {
+    abstract String id();
+    abstract ExecutionDescription description();
+
+    static Execution of(String id, ExecutionDescription description) {
+      return new AutoValue_Scheduler_Execution(id, description);
     }
   }
 }

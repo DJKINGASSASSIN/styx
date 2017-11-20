@@ -43,6 +43,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.RateLimiter;
 import com.spotify.styx.model.Event;
+import com.spotify.styx.model.ExecutionDescription;
 import com.spotify.styx.model.Resource;
 import com.spotify.styx.model.Schedule;
 import com.spotify.styx.model.SequenceEvent;
@@ -106,18 +107,15 @@ public class SchedulerTest {
   private ExecutorService executor = Executors.newCachedThreadPool();
 
   @Mock WorkflowResourceDecorator resourceDecorator;
-
   @Mock RateLimiter rateLimiter;
-
   @Mock Stats stats;
-
   @Mock WorkflowExecutionGate gate;
 
   @Before
   public void setUp() throws Exception {
     when(rateLimiter.tryAcquire()).thenReturn(true);
 
-    when(gate.missingDependencies(any(), any(), any()))
+    when(gate.missingDependencies(any(), any(), any(), any()))
         .thenReturn(WorkflowExecutionGate.NO_MISSING_DEPS);
   }
 
@@ -581,7 +579,7 @@ public class SchedulerTest {
 
   @Test
   public void shouldRetryLaterIfMissingDependencies() throws Exception {
-    when(gate.missingDependencies(any(), any(), any())).thenReturn(
+    when(gate.missingDependencies(any(), any(), any(), any())).thenReturn(
         CompletableFuture.completedFuture(ImmutableList.of("foo", "bar")));
 
     final Workflow workflow = workflowUsingResources(WORKFLOW_ID1);
@@ -592,17 +590,35 @@ public class SchedulerTest {
     final StateData stateData = StateData.newBuilder().tries(0).build();
     final RunState runState = RunState.create(INSTANCE, State.QUEUED, stateData, time);
 
-    init(runState);
+    final SortedSet<SequenceEvent> events = Sets.newTreeSet(SequenceEvent.COUNTER_COMPARATOR);
+    events.addAll(ImmutableList.of(
+        SequenceEvent.create(Event.dequeue(INSTANCE), 0, now.toEpochMilli() + 0),
+        SequenceEvent.create(Event.submit(INSTANCE, TestData.EXECUTION_DESCRIPTION, "e1"), 1, now.toEpochMilli() + 1),
+        SequenceEvent.create(Event.submitted(INSTANCE, "e1"), 2, now.toEpochMilli() + 2),
+        SequenceEvent.create(Event.started(INSTANCE), 3, now.toEpochMilli() + 3),
+        SequenceEvent.create(Event.terminate(INSTANCE, Optional.of(20)), 4, now.toEpochMilli() + 4),
+        SequenceEvent.create(Event.retryAfter(INSTANCE, TimeUnit.MINUTES.toMillis(10)), 5, now.toEpochMilli() + 5)
+    ));
+
+    stateManager.initialize(runState);
+    for (SequenceEvent event : events) {
+      stateManager.receiveIgnoreClosed(event.event());
+    }
+    reset(stateManager);
+
+    when(storage.readEvents(INSTANCE)).thenReturn(events);
+
+    now = now.plus(Duration.ofMinutes(20));
 
     scheduler.tick();
 
-    verify(gate).missingDependencies(INSTANCE, workflow.configuration(), runState);
+    verify(gate).missingDependencies(INSTANCE, workflow.configuration(), "e1", TestData.EXECUTION_DESCRIPTION);
     verify(stateManager).receive(Event.info(INSTANCE, Message.info("Missing dependencies: foo, bar")));
     verify(stateManager).receive(Event.retryAfter(INSTANCE, TimeUnit.MINUTES.toMillis(10)));
     verify(stateManager, never()).receive(Event.dequeue(INSTANCE));
 
     now = now.plus(Duration.ofMinutes(10));
-    when(gate.missingDependencies(any(), any(), any())).thenReturn(
+    when(gate.missingDependencies(any(), any(), any(), any())).thenReturn(
         WorkflowExecutionGate.NO_MISSING_DEPS);
 
     scheduler.tick();
@@ -651,14 +667,14 @@ public class SchedulerTest {
 
     when(storage.readEvents(INSTANCE)).thenReturn(events);
 
-    when(gate.missingDependencies(any(), any(), any())).thenReturn(
+    when(gate.missingDependencies(any(), any(), any(), any())).thenReturn(
         CompletableFuture.completedFuture(ImmutableList.of("foo", "bar")));
 
     now = now.plus(Duration.ofMinutes(20));
 
     scheduler.tick();
 
-    verify(gate).missingDependencies(eq(INSTANCE), eq(workflow.configuration()), any(RunState.class));
+    verify(gate).missingDependencies(eq(INSTANCE), eq(workflow.configuration()), any(), any());
     verify(stateManager).receive(Event.info(INSTANCE, Message.info("Missing dependencies: foo, bar")));
     verify(stateManager).receive(Event.retryAfter(INSTANCE, TimeUnit.MINUTES.toMillis(10)));
     verify(stateManager, never()).receive(Event.dequeue(INSTANCE));

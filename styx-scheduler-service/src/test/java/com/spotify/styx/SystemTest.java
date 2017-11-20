@@ -508,8 +508,8 @@ public class SystemTest extends StyxSchedulerServiceFixture {
     workflowChanges(changedWorkflow);
 
     // we must stagger the time progression here in order not to no trigger tons of retries
-    timePasses(TerminationHandler.MISSING_DEPS_RETRY_DELAY_MINUTES - 1, MINUTES);
-    timePasses(59, SECONDS);
+    timePasses(TerminationHandler.MISSING_DEPS_RETRY_DELAY.getSeconds() - 2, SECONDS);
+    timePasses(1, SECONDS);
     timePasses(StyxScheduler.SCHEDULER_TICK_INTERVAL_SECONDS, SECONDS);
 
     awaitNumberOfDockerRuns(2);

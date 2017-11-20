@@ -41,7 +41,7 @@ public class TerminationHandler implements OutputHandler {
   public static final double MAX_RETRY_COST = 50.0;
   public static final int MISSING_DEPS_EXIT_CODE = 20;
   public static final int FAIL_FAST_EXIT_CODE = 50;
-  public static final int MISSING_DEPS_RETRY_DELAY_MINUTES = 10;
+  public static final Duration MISSING_DEPS_RETRY_DELAY = Duration.ofSeconds(10);
 
   private final RetryUtil retryUtil;
   private final StateManager stateManager;
@@ -81,7 +81,7 @@ public class TerminationHandler implements OutputHandler {
       } else {
         final long delayMillis;
         if (isMissingDependency(exitCode)) {
-          delayMillis = Duration.ofMinutes(MISSING_DEPS_RETRY_DELAY_MINUTES).toMillis();
+          delayMillis = MISSING_DEPS_RETRY_DELAY.toMillis();
         } else {
           delayMillis = retryUtil.calculateDelay(state.data().consecutiveFailures()).toMillis();
         }

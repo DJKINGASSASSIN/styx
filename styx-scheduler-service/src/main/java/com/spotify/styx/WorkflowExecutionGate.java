@@ -44,16 +44,15 @@ public interface WorkflowExecutionGate {
    *
    * @param instance The workflow instance to check dependencies for.
    * @param configuration The {@link WorkflowConfiguration} of the workflow instance.
-   * @param runState The current {@link RunState} of the workflow instance. Contains information
-   *     about the previous execution, like exit code and {@link ExecutionDescription}.
    * @return A list of missing dependency resource identifiers, e.g. uris.
    */
   CompletionStage<List<String>> missingDependencies(
-      WorkflowInstance instance, WorkflowConfiguration configuration, RunState runState);
+      WorkflowInstance instance, WorkflowConfiguration configuration,
+      String prevExecutionId, ExecutionDescription prevExecutionDescription);
 
   /**
    * A nop {@link WorkflowExecutionGate} that never returns any missing dependencies. I.e., the
    * execution can always proceed.
    */
-  WorkflowExecutionGate NOOP = (wfi, state, storage) -> NO_MISSING_DEPS;
+  WorkflowExecutionGate NOOP = (wfi, configuration, prevExecId, prevExecDesc) -> NO_MISSING_DEPS;
 }
