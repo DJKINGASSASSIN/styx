@@ -42,8 +42,10 @@ import com.spotify.styx.client.auth.GoogleIdTokenAuth;
 import com.spotify.styx.model.Schedule;
 import com.spotify.styx.model.Workflow;
 import com.spotify.styx.model.WorkflowConfiguration;
+import com.spotify.styx.model.WorkflowState;
 import com.spotify.styx.serialization.Json;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -138,6 +140,26 @@ public class StyxApolloClientTest {
     assertThat(request.uri(), is(API_URL + "/workflows/foo-comp"));
     assertThat(Json.deserialize(request.payload().get(), WorkflowConfiguration.class), is(config));
     assertThat(request.method(), is("POST"));
+  }
+
+  @Test
+  public void shouldUpdateWorkflowState() throws Exception {
+    final WorkflowState workflowState = WorkflowState.builder()
+        .enabled(true)
+        .nextNaturalTrigger(Instant.parse("2017-01-03T21:00:00Z"))
+        .nextNaturalTrigger(Instant.parse("2017-01-03T22:00:00Z"))
+        .build();
+    when(client.send(any(Request.class))).thenReturn(CompletableFuture.completedFuture(
+        Response.forStatus(Status.OK).withPayload(Json.serialize(workflowState))));
+    final StyxApolloClient styx = new StyxApolloClient(client, CLIENT_HOST, auth);
+    final CompletableFuture<WorkflowState> r =
+        styx.updateWorkflowState("foo-comp", "bar-wf", workflowState).toCompletableFuture();
+    verify(client, timeout(30_000)).send(requestCaptor.capture());
+    assertThat(r.isDone(), is(true));
+    final Request request = requestCaptor.getValue();
+    assertThat(request.uri(), is(API_URL + "/workflows/foo-comp/bar-wf/state"));
+    assertThat(Json.deserialize(request.payload().get(), WorkflowState.class), is(workflowState));
+    assertThat(request.method(), is("PATCH"));
   }
 
   @Test
